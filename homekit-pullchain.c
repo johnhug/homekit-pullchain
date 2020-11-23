@@ -21,11 +21,9 @@
 #define PULLCHAIN_GPIO      12 // D6
 #define RELAY_GPIO          4 // D2
 
-#define PULLCHAIN_PAUSE     1000
+#define PULLCHAIN_PAUSE     500
 
-#define UUID_PULLCHAIN "8c7b9b10-276a-11eb-bd60-3f66a13f33f8"
-
-static QueueHandle_t tsqueue;
+uint32_t last_interrupt = 0;
 
 // Home Kit variables
 bool hk_on = false;
@@ -43,11 +41,6 @@ void identify_task(void *_args) {
     vTaskDelete(NULL);
 }
 
-void gpio_intr_handler(uint8_t gpio_num) {
-    uint32_t now = xTaskGetTickCountFromISR();
-    xQueueSendToBackFromISR(tsqueue, &now, NULL);
-}
-
 void updateRelay() {
     printf("updateRelay: %d\n", hk_on);
     gpio_write(RELAY_GPIO, hk_on ? 1 : 0);
@@ -62,13 +55,12 @@ homekit_value_t on_get() {
 }
 
 void on_set(homekit_value_t value) {
-    hk_on = value.bool_value;
-    updateRelay();
-}
-
-homekit_value_t pullchain_get() {
-    bool pullchain = gpio_read(PULLCHAIN_GPIO) == 1;
-    return HOMEKIT_BOOL(pullchain);
+    uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    if (last_interrupt < now - PULLCHAIN_PAUSE) {
+        last_interrupt = now;
+        hk_on = value.bool_value;
+        updateRelay();
+    }
 }
 
 homekit_characteristic_t on = HOMEKIT_CHARACTERISTIC_(
@@ -76,39 +68,15 @@ homekit_characteristic_t on = HOMEKIT_CHARACTERISTIC_(
     .getter = on_get,
     .setter = on_set,
     );
-    
-homekit_characteristic_t pullchain = HOMEKIT_CHARACTERISTIC_(
-    CUSTOM,
-    .type = UUID_PULLCHAIN,
-    .description = "Pullchain",
-    .format = homekit_format_bool,
-    .permissions = homekit_permissions_paired_read ||
-                    homekit_permissions_notify,
-    .value = HOMEKIT_BOOL_(false),
-    .getter = pullchain_get
-);
 
-void pullthechain() {
-    printf("pullthechain: %d\n", gpio_read(PULLCHAIN_GPIO));
-    hk_on = !hk_on;
-    homekit_characteristic_notify(&on, HOMEKIT_BOOL(hk_on));
-    homekit_characteristic_notify(&pullchain, HOMEKIT_BOOL(gpio_read(PULLCHAIN_GPIO) == 1));
-    updateRelay();
-}
-
-void pullchainINT(void *_args) {
-    QueueHandle_t *tsqueue = (QueueHandle_t *)_args;
-    gpio_set_interrupt(PULLCHAIN_GPIO, GPIO_INTTYPE_EDGE_ANY, gpio_intr_handler);
-
-    uint32_t last = 0;
-    while(1) {
-        uint32_t trigger_ts;
-        xQueueReceive(*tsqueue, &trigger_ts, portMAX_DELAY);
-        trigger_ts *= portTICK_PERIOD_MS;
-        if (last < trigger_ts - PULLCHAIN_PAUSE) {
-            last = trigger_ts;
-            pullthechain();
-        }
+void gpio_intr_handler(uint8_t gpio_num) {
+    uint32_t now = xTaskGetTickCountFromISR() * portTICK_PERIOD_MS;
+    if (last_interrupt < now - PULLCHAIN_PAUSE) {
+        last_interrupt = now;
+        printf("pullthechain: %d\n", gpio_read(PULLCHAIN_GPIO));
+        hk_on = !hk_on;
+        homekit_characteristic_notify(&on, HOMEKIT_BOOL(hk_on));
+        updateRelay();
     }
 }
 
@@ -131,7 +99,6 @@ homekit_accessory_t *accessories[] = {
         HOMEKIT_SERVICE(LIGHTBULB, .primary = true, .characteristics = (homekit_characteristic_t*[]) {
             HOMEKIT_CHARACTERISTIC(NAME, "Chouchin"),
             &on,
-            &pullchain,
             NULL
         }),
         NULL
@@ -159,11 +126,9 @@ void on_wifi_ready() {
 
 void user_init(void) {
     gpio_enable(LED_INBUILT_GPIO, GPIO_OUTPUT);
-    gpio_enable(PULLCHAIN_GPIO, GPIO_INPUT);
     gpio_enable(RELAY_GPIO, GPIO_OUTPUT);
-
-    tsqueue = xQueueCreate(2, sizeof(uint32_t));
-    xTaskCreate(pullchainINT, "Pullchain INT", 256, &tsqueue, 2, NULL);
+    gpio_enable(PULLCHAIN_GPIO, GPIO_INPUT);
+    gpio_set_interrupt(PULLCHAIN_GPIO, GPIO_INTTYPE_EDGE_ANY, gpio_intr_handler);
 
     wifi_config_init("Chouchin", NULL, on_wifi_ready);
 
@@ -175,9 +140,4 @@ void user_init(void) {
     name.value = HOMEKIT_STRING(name_value);
  
     homekit_server_init(&config);
-
-    hk_on = gpio_read(PULLCHAIN_GPIO) == 1;
-    homekit_characteristic_notify(&on, HOMEKIT_BOOL(hk_on));
-    homekit_characteristic_notify(&pullchain, HOMEKIT_BOOL(hk_on));
-    updateRelay();
 }
