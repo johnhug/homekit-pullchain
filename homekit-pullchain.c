@@ -21,9 +21,10 @@
 #define PULLCHAIN_GPIO      12 // D6
 #define RELAY_GPIO          4 // D2
 
-#define PULLCHAIN_PAUSE     500
+#define PULLCHAIN_PAUSE     100
 
 uint32_t last_interrupt = 0;
+bool last_pullchain = false;
 
 // Home Kit variables
 bool hk_on = false;
@@ -71,9 +72,11 @@ homekit_characteristic_t on = HOMEKIT_CHARACTERISTIC_(
 
 void gpio_intr_handler(uint8_t gpio_num) {
     uint32_t now = xTaskGetTickCountFromISR() * portTICK_PERIOD_MS;
-    if (last_interrupt < now - PULLCHAIN_PAUSE) {
+    bool pullchain = gpio_read(PULLCHAIN_GPIO);
+    if (last_interrupt < now - PULLCHAIN_PAUSE && pullchain != last_pullchain) {
         last_interrupt = now;
-        printf("pullthechain: %d\n", gpio_read(PULLCHAIN_GPIO));
+        printf("pullthechain: %d\n", pullchain);
+        last_pullchain = pullchain;
         hk_on = !hk_on;
         homekit_characteristic_notify(&on, HOMEKIT_BOOL(hk_on));
         updateRelay();
@@ -128,6 +131,7 @@ void user_init(void) {
     gpio_enable(LED_INBUILT_GPIO, GPIO_OUTPUT);
     gpio_enable(RELAY_GPIO, GPIO_OUTPUT);
     gpio_enable(PULLCHAIN_GPIO, GPIO_INPUT);
+    last_pullchain = gpio_read(PULLCHAIN_GPIO);
     gpio_set_interrupt(PULLCHAIN_GPIO, GPIO_INTTYPE_EDGE_ANY, gpio_intr_handler);
 
     wifi_config_init("Chouchin", NULL, on_wifi_ready);
